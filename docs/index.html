@@ -73,12 +73,12 @@ button.cell:not(:disabled):hover{border-color:var(--accent)}
 <main id="app"></main>
 <script>
 // ===================== settings =====================
-const VERSION = "2.0";
+const VERSION = "2.1";
 const N_DECKS = 720;
 const BUILD = "fadf45219f";      // id of the deck set; the private key file with the same id decodes the answers
 // Google Form that receives the answers (one row per save). Leave FORM empty for a test build: nothing is sent.
 const FORM = 'https://docs.google.com/forms/d/e/1FAIpQLSeJtEaunZh-2kb6MGGyPDqmrwLAEmviepfvzOZAm2EKPPKkqg/formResponse';
-const F_SID = 'entry.264376674', F_DATA = 'entry.728211652';
+const F_SID = 'entry.264376674', F_DATA = 'entry.728211652', F_COMMON = 'entry.1522227847';   // F_COMMON: the picks on the common screens, for the crowd numbers
 const CLOSE_AT = null;                 // e.g. new Date("2026-12-31T23:59:59+01:00"); after it: try-out only, nothing saved
 const QUESTION = 'Which one is written least like the other two?';
 const HINT = 'Look at the shape of the strokes, not at how dark or sharp the image is.';
@@ -102,17 +102,25 @@ function shuffle(a){ for (let i = a.length-1; i > 0; i--){ const j = Math.floor(
 const median = a => { const b = [...a].sort((x, y) => x - y); return b.length ? (b.length % 2 ? b[(b.length - 1) / 2] : (b[b.length / 2 - 1] + b[b.length / 2]) / 2) : null; };
 
 // ---------- saving: at the end of every round, when the tab is closed, and at the end ----------
+// The Form refuses requests above ~32 KB, so every save sends only the answers that are not saved yet ("from" = index
+// of the first one). The decoder joins the parts of a session by sid and answer index n.
 function payload(final){
+  const from = state.savedN, part = state.answers.slice(from);
   const data = { sid: state.sid, version: VERSION, build: BUILD, deck: state.deck, extraDecks: state.extraDecks, final: !!final,
     stoppedEarly: state.stoppedEarly, roundsDone: state.roundsDone, startedAt: state.startedAt, savedAt: new Date().toISOString(), runs: mem.runs || 0,
     screen: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio || 1, touch: matchMedia('(pointer:coarse)').matches, narrow: innerWidth < 600 },
-    end: state.end, answers: state.answers };
-  return { data, body: new URLSearchParams({ [F_SID]: state.sid, [F_DATA]: JSON.stringify(data) }) };
+    end: state.end, from, total: state.answers.length, answers: part };
+  const body = { [F_SID]: state.sid, [F_DATA]: JSON.stringify(data) };
+  const common = part.filter(a => !a.skip && commonOf[a.t] !== undefined).map(a => commonOf[a.t] + ':' + a.c[a.pick[0]]);
+  if (common.length && F_COMMON.startsWith('entry.')) body[F_COMMON] = state.sid + '|' + common.join(',');
+  return { data, n: state.answers.length, body: new URLSearchParams(body) };
 }
+const commonOf = {};                                       // trial id -> number of the common screen
 const canSave = () => !TEST && !isClosed() && !mem.revealed && !document.getElementById('hp')?.value;   // honeypot filled: a bot
 async function saveSession(final){
   if (!canSave()) { state.saved = true; return; }
-  const { data, body } = payload(final), n = state.answers.length;
+  if (state.answers.length <= state.savedN && !final) { state.saved = true; return; }
+  const { data, n, body } = payload(final);
   for (let attempt = 0; attempt < 3; attempt++){
     try {
       await fetch(FORM, { method: 'POST', mode: 'no-cors', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: body.toString() });
@@ -125,7 +133,7 @@ async function saveSession(final){
 }
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'hidden' || !state.sid || state.done || state.answers.length <= state.savedN || !canSave()) return;
-  try { if (navigator.sendBeacon(FORM, payload(false).body)) state.savedN = state.answers.length; } catch(e) {}
+  try { const p = payload(false); if (navigator.sendBeacon(FORM, p.body)) state.savedN = p.n; } catch(e) {}
 });
 
 // ---------- images ----------
@@ -182,7 +190,7 @@ async function start(){
   Object.assign(state, { startedAt: new Date().toISOString(), sid: newSid(), answers: [], end: {}, stoppedEarly: false, savedN: 0,
     done: false, counted: false, roundsDone: 0, extraDecks: [], deck: null });
   const d = pickDeck();
-  try { const deck = await getDeck(d); rounds = deck.rounds; state.deck = deck.deck; mem.decks = [...(mem.decks || []), d].slice(-50); remember(); }
+  try { const deck = await getDeck(d); rounds = deck.rounds; deck.rounds.forEach(R => R.t.forEach(t => { if (t.k !== undefined) commonOf[t.id] = t.k; })); state.deck = deck.deck; mem.decks = [...(mem.decks || []), d].slice(-50); remember(); }
   catch(e){ go.disabled = false; go.insertAdjacentHTML('afterend', '<p class="fine">Could not load the snippets. Check your connection and try again.</p>'); return; }
   ri = 0; ti = 0; await Promise.all(rounds[0].t[0].c.map(loadImg)).catch(() => {}); trial();
 }
