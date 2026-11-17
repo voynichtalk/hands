@@ -73,12 +73,12 @@ button.cell:not(:disabled):hover{border-color:var(--accent)}
 <main id="app"></main>
 <script>
 // ===================== settings =====================
-const VERSION = "2.1";
+const VERSION = "2.2";
 const N_DECKS = 720;
-const BUILD = "fadf45219f";      // id of the deck set; the private key file with the same id decodes the answers
+const BUILD = "4cd7039588";      // id of the deck set; the private key file with the same id decodes the answers
 // Google Form that receives the answers (one row per save). Leave FORM empty for a test build: nothing is sent.
 const FORM = 'https://docs.google.com/forms/d/e/1FAIpQLSeJtEaunZh-2kb6MGGyPDqmrwLAEmviepfvzOZAm2EKPPKkqg/formResponse';
-const F_SID = 'entry.264376674', F_DATA = 'entry.728211652', F_COMMON = 'entry.1522227847';   // F_COMMON: the picks on the common screens, for the crowd numbers
+const F_SID = 'entry.264376674', F_DATA = 'entry.728211652';
 const CLOSE_AT = null;                 // e.g. new Date("2026-12-31T23:59:59+01:00"); after it: try-out only, nothing saved
 const QUESTION = 'Which one is written least like the other two?';
 const HINT = 'Look at the shape of the strokes, not at how dark or sharp the image is.';
@@ -110,12 +110,8 @@ function payload(final){
     stoppedEarly: state.stoppedEarly, roundsDone: state.roundsDone, startedAt: state.startedAt, savedAt: new Date().toISOString(), runs: mem.runs || 0,
     screen: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio || 1, touch: matchMedia('(pointer:coarse)').matches, narrow: innerWidth < 600 },
     end: state.end, from, total: state.answers.length, answers: part };
-  const body = { [F_SID]: state.sid, [F_DATA]: JSON.stringify(data) };
-  const common = part.filter(a => !a.skip && commonOf[a.t] !== undefined).map(a => commonOf[a.t] + ':' + a.c[a.pick[0]]);
-  if (common.length && F_COMMON.startsWith('entry.')) body[F_COMMON] = state.sid + '|' + common.join(',');
-  return { data, n: state.answers.length, body: new URLSearchParams(body) };
+  return { data, n: state.answers.length, body: new URLSearchParams({ [F_SID]: state.sid, [F_DATA]: JSON.stringify(data) }) };
 }
-const commonOf = {};                                       // trial id -> number of the common screen
 const canSave = () => !TEST && !isClosed() && !mem.revealed && !document.getElementById('hp')?.value;   // honeypot filled: a bot
 async function saveSession(final){
   if (!canSave()) { state.saved = true; return; }
@@ -159,7 +155,7 @@ function welcome(){
       <p>This is a short study on how people see the handwriting in the Voynich manuscript, a medieval book in a script nobody can read.</p>
       <p>You will see small snippets of a single glyph or glyph cluster, cut from its pages, three at a time. Each time, pick the one that is written least like the other two.</p>
       <p>There are no right or wrong answers and you need no knowledge of the manuscript. Go with your eyes.</p>
-      <p>There are three short rounds of 12, about ten minutes in all. After that you can do more rounds if you like. When you stop, you'll see a few things about your own choices and how they compare with other people's.</p>
+      <p>There are three short rounds of 12, about ten minutes in all. After that you can do more rounds if you like. When you stop, you'll see a few things about your own choices.</p>
       <p class="fine">Anonymous: we store your choices, how long each took, your screen size and two answers about yourself at the end. You can stop after every round and what you did still counts.</p>
       <input id="hp" name="website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0">
     </div>
@@ -190,7 +186,7 @@ async function start(){
   Object.assign(state, { startedAt: new Date().toISOString(), sid: newSid(), answers: [], end: {}, stoppedEarly: false, savedN: 0,
     done: false, counted: false, roundsDone: 0, extraDecks: [], deck: null });
   const d = pickDeck();
-  try { const deck = await getDeck(d); rounds = deck.rounds; deck.rounds.forEach(R => R.t.forEach(t => { if (t.k !== undefined) commonOf[t.id] = t.k; })); state.deck = deck.deck; mem.decks = [...(mem.decks || []), d].slice(-50); remember(); }
+  try { const deck = await getDeck(d); rounds = deck.rounds; state.deck = deck.deck; mem.decks = [...(mem.decks || []), d].slice(-50); remember(); }
   catch(e){ go.disabled = false; go.insertAdjacentHTML('afterend', '<p class="fine">Could not load the snippets. Check your connection and try again.</p>'); return; }
   ri = 0; ti = 0; await Promise.all(rounds[0].t[0].c.map(loadImg)).catch(() => {}); trial();
 }
@@ -297,16 +293,14 @@ async function finish(){
     document.getElementById('retry').onclick = finish; return;
   }
   state.done = true;
-  let crowd = null;
-  try { if (!PREVIEW) crowd = await (await fetch('crowd.json', { cache: 'no-cache' })).json(); } catch(e) {}
-  results(crowd);
+  results();
   if (!TEST){ mem.revealed = true; remember(); }
 }
 
 // ---------- results: computed in the browser from this session only (plus the crowd file) ----------
-function results(crowd){
+function results(){
   const info = {};                                         // trial id -> {g, k, x, p}
-  rounds.forEach(R => R.t.forEach(t => info[t.id] = { g: R.g, k: t.k, x: t.x, p: t.p, c: t.c }));
+  rounds.forEach(R => R.t.forEach(t => info[t.id] = { g: R.g, x: t.x, p: t.p, c: t.c }));
   const A = state.answers.filter(a => !a.skip && !info[a.t].p);
   const thumbs = (codes, mine, labels) => {
     const f = { w: 64, h: 44 };
@@ -337,26 +331,6 @@ function results(crowd){
       <p>How often you picked the first, second or third snippet on the screen. Perfectly random would be about a third each; the order on screen was shuffled every time.</p>
       <div class="bars">${pc.map((v, j) => `<span>${lab[j]}</span><div class="b"><div style="width:${v}%"></div></div><span>${v}%</span>`).join('')}</div></div>`);
   }
-  // 4. agreement with the crowd on the screens everyone sees
-  const C = A.filter(a => info[a.t].k !== undefined);
-  if (C.length){
-    const people = crowd && crowd.build === BUILD ? crowd.people : 0;
-    if (!people){
-      cards.push(`<div class="res"><h3>You and the others</h3>
-        <p>${C.length} of your screens are shown to everyone who takes part. You are among the very first, so there is nobody to compare you with yet. Your choices will be part of the yardstick for the people after you.</p></div>`);
-    } else {
-      let same = 0, rows = '';
-      C.forEach(a => {
-        const cnt = (crowd.screens[info[a.t].k] || {}), tot = Object.values(cnt).reduce((x, y) => x + y, 0);
-        if (!tot) return;
-        const mx = Math.max(...Object.values(cnt)), mine = a.c[a.pick[0]];
-        if ((cnt[mine] || 0) === mx) same++;
-        rows += thumbs(a.c, mine, a.c.map(c => Math.round((cnt[c] || 0) / tot * 100) + '%'));
-      });
-      cards.push(`<div class="res"><h3>You and the others</h3>
-        <p>Some screens are shown to everyone. On <b>${same} of ${C.length}</b> of them you picked the same snippet as most of the ${people} people before you. Below: what everyone picked; your choice is outlined.</p>${rows}</div>`);
-    }
-  }
   // 5. the secret: same-page screens (shown only here, at the very end)
   const S = A.filter(a => info[a.t].x !== undefined);
   if (S.length >= 3){
@@ -368,7 +342,7 @@ function results(crowd){
   }
   screen(`${head('Your results')}
     <h1>Thank you!</h1>
-    <p>You judged ${A.length + state.answers.filter(a => !a.skip && info[a.t].p).length} screens. ${TEST || mem.revealed ? 'Nothing was saved in this run.' : 'Your answers are saved.'}</p>
+    <p>You judged ${state.answers.filter(a => !a.skip).length} screens. ${TEST || mem.revealed ? 'Nothing was saved in this run.' : 'Your answers are saved.'}</p>
     ${cards.join('')}
     <div class="stack">
       <p><b>One request:</b> please don't share these results or discuss what you think this study is about until it has closed. Others should come to it as fresh as you did.</p>
