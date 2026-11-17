@@ -43,6 +43,17 @@ legend{font-weight:700;margin-bottom:6px;padding:0}
 .choice{background:var(--surface);border:2px solid var(--line);border-radius:12px;padding:16px 10px;font-family:var(--display);font-size:clamp(19px,4.2vw,24px);font-weight:700;display:flex;flex-direction:column;align-items:center;gap:2px}
 .choice small{font-family:var(--body);font-size:12px;font-weight:400;color:var(--muted)}
 .choice:hover{border-color:var(--accent)}
+/* results */
+.res{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:16px 18px;display:flex;flex-direction:column;gap:10px}
+.res h3{font-family:var(--display);font-size:20px;margin:0}
+.thumbs{display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end}
+.thumb{display:flex;flex-direction:column;align-items:center;gap:3px;font-size:13px;color:var(--muted)}
+.thumb .cell{border-width:2px}
+.thumb .cell.mine{border-color:var(--accent);box-shadow:0 0 0 2px var(--accent)}
+.bars{display:grid;grid-template-columns:auto 1fr auto;gap:6px 10px;align-items:center;font-size:15px}
+.bars .b{height:12px;background:var(--line);border-radius:6px;overflow:hidden}
+.bars .b div{height:100%;background:var(--accent)}
+.big{font-family:var(--display);font-size:clamp(26px,6vw,36px);font-weight:700;line-height:1.1}
 /* crops */
 .set{display:flex;justify-content:center;gap:var(--gap,14px);flex-wrap:wrap}
 .set.col{flex-direction:column;align-items:center}
@@ -62,38 +73,43 @@ button.cell:not(:disabled):hover{border-color:var(--accent)}
 <main id="app"></main>
 <script>
 // ===================== settings =====================
-const VERSION = "1.1";
-const N_DECKS = 360;
-const BUILD = "0cece08aac";      // id of the deck set; the private key file with the same id decodes the answers
+const VERSION = "2.0";
+const N_DECKS = 720;
+const BUILD = "fadf45219f";      // id of the deck set; the private key file with the same id decodes the answers
 // Google Form that receives the answers (one row per save). Leave FORM empty for a test build: nothing is sent.
 const FORM = 'https://docs.google.com/forms/d/e/1FAIpQLSeJtEaunZh-2kb6MGGyPDqmrwLAEmviepfvzOZAm2EKPPKkqg/formResponse';
 const F_SID = 'entry.264376674', F_DATA = 'entry.728211652';
 const CLOSE_AT = null;                 // e.g. new Date("2026-12-31T23:59:59+01:00"); after it: try-out only, nothing saved
-const BREAK_EVERY = 12;
 const QUESTION = 'Which one is written least like the other two?';
 const HINT = 'Look at the shape of the strokes, not at how dark or sharp the image is.';
+const GLYPH = { aiin: 'the aiin group', k: 'the tall k', r: 'the small r' };
 // =====================================================
-const TEST = !FORM || new URLSearchParams(location.search).has('test');
-const isClosed = () => CLOSE_AT && Date.now() > CLOSE_AT.getTime();
-const app = document.getElementById('app');
-const state = { answers: [], end: {}, startedAt: null, sid: null, deck: null, saved: null, stoppedEarly: false, savedN: 0, done: false, counted: false };
-let trials = [], ti = 0, shownAt = 0, busy = false;
-
+const PREVIEW = /*__PREVIEW__*/null;       // single-file try-out build: one deck and its images inlined
 const LS = 'vt-hands';
 const mem = (() => { try { return JSON.parse(localStorage.getItem(LS) || '{}'); } catch(e){ return {}; } })();
 const remember = () => { try { localStorage.setItem(LS, JSON.stringify(mem)); } catch(e){} };
+// No saving in test mode, after closing, or for someone who already saw the results screen on this device
+// (the results explain part of the design, so later answers from them would no longer be "fresh").
+const TEST = !FORM || new URLSearchParams(location.search).has('test');
+const isClosed = () => CLOSE_AT && Date.now() > CLOSE_AT.getTime();
+const app = document.getElementById('app');
+const state = { answers: [], end: {}, startedAt: null, sid: null, deck: null, extraDecks: [], saved: null, stoppedEarly: false,
+  savedN: 0, done: false, counted: false, roundsDone: 0 };
+let rounds = [], ri = 0, ti = 0, shownAt = 0, busy = false;   // rounds: [{g, planned, t:[trial]}]; ri = round, ti = screen in round
+
 function newSid(){ return (crypto.randomUUID ? crypto.randomUUID() : 'xxxxxxxx-xxxx-4xxx-8xxx-xxxxxxxxxxxx'.replace(/x/g, () => (Math.random()*16|0).toString(16))); }
 function shuffle(a){ for (let i = a.length-1; i > 0; i--){ const j = Math.floor(Math.random()*(i+1)); [a[i],a[j]] = [a[j],a[i]]; } return a; }
+const median = a => { const b = [...a].sort((x, y) => x - y); return b.length ? (b.length % 2 ? b[(b.length - 1) / 2] : (b[b.length / 2 - 1] + b[b.length / 2]) / 2) : null; };
 
-// Saved at every break and at the end; each save is one row holding everything so far (the analysis keeps the last row per session).
+// ---------- saving: at the end of every round, when the tab is closed, and at the end ----------
 function payload(final){
-  const data = { sid: state.sid, version: VERSION, build: BUILD, deck: state.deck, final: !!final, stoppedEarly: state.stoppedEarly,
-    startedAt: state.startedAt, savedAt: new Date().toISOString(), runs: mem.runs || 0,
+  const data = { sid: state.sid, version: VERSION, build: BUILD, deck: state.deck, extraDecks: state.extraDecks, final: !!final,
+    stoppedEarly: state.stoppedEarly, roundsDone: state.roundsDone, startedAt: state.startedAt, savedAt: new Date().toISOString(), runs: mem.runs || 0,
     screen: { w: innerWidth, h: innerHeight, dpr: devicePixelRatio || 1, touch: matchMedia('(pointer:coarse)').matches, narrow: innerWidth < 600 },
     end: state.end, answers: state.answers };
   return { data, body: new URLSearchParams({ [F_SID]: state.sid, [F_DATA]: JSON.stringify(data) }) };
 }
-const canSave = () => !TEST && !isClosed() && !document.getElementById('hp')?.value;   // honeypot filled: a bot
+const canSave = () => !TEST && !isClosed() && !mem.revealed && !document.getElementById('hp')?.value;   // honeypot filled: a bot
 async function saveSession(final){
   if (!canSave()) { state.saved = true; return; }
   const { data, body } = payload(final), n = state.answers.length;
@@ -107,35 +123,41 @@ async function saveSession(final){
   }
   state.saved = false;
 }
-// Someone who closes the tab between two breaks: send what is not saved yet while the page goes away.
 document.addEventListener('visibilitychange', () => {
   if (document.visibilityState !== 'hidden' || !state.sid || state.done || state.answers.length <= state.savedN || !canSave()) return;
   try { if (navigator.sendBeacon(FORM, payload(false).body)) state.savedN = state.answers.length; } catch(e) {}
 });
 
-function screen(html){ app.innerHTML = html; window.scrollTo(0,0); const f = app.querySelector('[autofocus]'); f && f.focus({preventScroll:true}); }
-const head = (step) => `<div class="eyebrow"><span>Voynich Talk · handwriting study</span>${TEST ? '<span class="test">test: nothing is saved</span>' : ''}${step ? `<span>${step}</span>` : ''}</div>`;
-const bar = () => `<div class="progress" aria-hidden="true"><div style="width:${ti/trials.length*100}%"></div></div>`;
-
-const imgCache = {};
-const PREVIEW = /*__PREVIEW__*/null;       // single-file try-out build: one deck and its images inlined
+// ---------- images ----------
 const src = code => PREVIEW ? PREVIEW.img[code] : `img/${code}.png`;
-function loadImg(code){ return imgCache[code] ||= new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src(code); }); }
-const preload = t => t && t.c.forEach(loadImg);
+const imgCache = {};
+function loadOnce(code, bust){ return new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = src(code) + (bust && !PREVIEW ? '?r=' + Date.now() : ''); }); }
+function loadImg(code){ return imgCache[code] ||= loadOnce(code).catch(() => new Promise(r => setTimeout(r, 1500)).then(() => loadOnce(code, true)))
+  .catch(e => { delete imgCache[code]; throw e; }); }
+const preload = t => t && t.c.forEach(c => loadImg(c).catch(() => {}));
+
+// ---------- screens ----------
+function screen(html){ app.innerHTML = html; window.scrollTo(0,0); const f = app.querySelector('[autofocus]'); f && f.focus({preventScroll:true}); }
+const head = (step) => `<div class="eyebrow"><span>Voynich Talk · handwriting study</span>${TEST || mem.revealed ? '<span class="test">nothing is saved</span>' : ''}${step ? `<span>${step}</span>` : ''}</div>`;
+const nPlanned = () => rounds.filter(r => r.planned).length;
+const roundLabel = () => rounds[ri].planned ? `Round ${ri + 1} of ${nPlanned()}` : `Bonus round ${ri + 1 - nPlanned()}`;
+const judged = () => state.answers.filter(a => !a.skip).length;
+const bar = () => `<div class="progress" aria-hidden="true"><div style="width:${ti / rounds[ri].t.length * 100}%"></div></div>`;
 
 function welcome(){
   screen(`${head()}
     <h1>How do you see the handwriting?</h1>
     <div class="stack">
       <p>This is a short study on how people see the handwriting in the Voynich manuscript, a medieval book in a script nobody can read.</p>
-      <p>You will see small snippets of a single glyph or glyph cluster, cut from its pages, three at a time. Each time, pick the one that is written least like the other two. A few screens show nine snippets instead.</p>
+      <p>You will see small snippets of a single glyph or glyph cluster, cut from its pages, three at a time. Each time, pick the one that is written least like the other two.</p>
       <p>There are no right or wrong answers and you need no knowledge of the manuscript. Go with your eyes.</p>
-      <p class="fine">Anonymous: we store your choices, how long each took, your screen size and two answers about yourself at the end. It takes about eight minutes; you can stop at every break and what you did still counts.</p>
+      <p>There are three short rounds of 12, about ten minutes in all. After that you can do more rounds if you like. When you stop, you'll see a few things about your own choices and how they compare with other people's.</p>
+      <p class="fine">Anonymous: we store your choices, how long each took, your screen size and two answers about yourself at the end. You can stop after every round and what you did still counts.</p>
       <input id="hp" name="website" tabindex="-1" autocomplete="off" aria-hidden="true" style="position:absolute;left:-9999px;width:1px;height:1px;opacity:0">
     </div>
     ${isClosed() ? `<p><b>The study has closed.</b> You are welcome to try it, but your answers are no longer saved.</p>` : ''}
-    ${mem.finishedAt ? `<p class="fine">You already took part on ${new Date(mem.finishedAt).toLocaleDateString()}. You are welcome to do it again with new snippets.</p>` : ''}
-    <button class="btn" id="go" autofocus>${isClosed() ? 'Try it anyway' : 'Start'}</button>`);
+    ${mem.revealed ? `<p class="fine">You already took part on ${new Date(mem.finishedAt || Date.now()).toLocaleDateString()} and saw how it works, so your answers would no longer be fresh. You can try it again, but nothing will be saved.</p>` : ''}
+    <button class="btn" id="go" autofocus>${isClosed() || mem.revealed ? 'Try it anyway' : 'Start'}</button>`);
   document.getElementById('go').onclick = instructions;
 }
 function instructions(){
@@ -144,104 +166,95 @@ function instructions(){
     <div class="stack">
       <p>${HINT}</p>
       <p>Some snippets are faint, blotchy or grainy; that comes from the parchment and the photograph. Try to look through it at how the pen moved: the shapes, the proportions, the slant, the way strokes begin and end.</p>
-      <p>Tap or click a snippet to choose it (on a keyboard: <b>1</b>, <b>2</b>, <b>3</b>). You can't go back, so don't overthink it. The first few are for getting used to it. After every ${BREAK_EVERY} your answers are saved and you can stop or carry on.</p>
+      <p>Tap or click a snippet to choose it (on a keyboard: <b>1</b>, <b>2</b>, <b>3</b>). You can't go back, so don't overthink it. The first three are for getting used to it. After every round your answers are saved and you can stop or carry on.</p>
     </div>
     <button class="btn" id="go" autofocus>Show the first three</button>`);
   document.getElementById('go').onclick = start;
 }
+async function getDeck(d){ return PREVIEW ? PREVIEW.deck : (await fetch(`decks/${d}.json`, { cache: 'no-cache' })).json(); }
+function pickDeck(){
+  const seen = mem.decks || []; let d;
+  for (let k = 0; k < 30; k++){ d = Math.floor(Math.random() * N_DECKS); if (!seen.includes(d) && d !== state.deck && !state.extraDecks.includes(d)) break; }
+  return d;
+}
 async function start(){
   const go = document.getElementById('go'); go.disabled = true;
-  state.startedAt = new Date().toISOString(); state.sid = newSid(); state.answers = []; state.end = {}; state.stoppedEarly = false; state.savedN = 0; state.done = false; state.counted = false;
-  // a deck not used before on this device, otherwise any
-  const seen = mem.decks || []; let d;
-  for (let k = 0; k < 20; k++){ d = Math.floor(Math.random() * N_DECKS); if (!seen.includes(d)) break; }
-  try {
-    const deck = PREVIEW ? PREVIEW.deck : await (await fetch(`decks/${d}.json`, { cache: 'no-cache' })).json();
-    trials = deck.trials; state.deck = deck.deck; mem.decks = [...seen, d].slice(-50); remember();
-  } catch(e){ go.disabled = false; go.insertAdjacentHTML('afterend', '<p class="fine">Could not load the snippets. Check your connection and try again.</p>'); return; }
-  ti = 0; await Promise.all(trials[0].c.map(loadImg)).catch(() => {}); trial();
+  Object.assign(state, { startedAt: new Date().toISOString(), sid: newSid(), answers: [], end: {}, stoppedEarly: false, savedN: 0,
+    done: false, counted: false, roundsDone: 0, extraDecks: [], deck: null });
+  const d = pickDeck();
+  try { const deck = await getDeck(d); rounds = deck.rounds; state.deck = deck.deck; mem.decks = [...(mem.decks || []), d].slice(-50); remember(); }
+  catch(e){ go.disabled = false; go.insertAdjacentHTML('afterend', '<p class="fine">Could not load the snippets. Check your connection and try again.</p>'); return; }
+  ri = 0; ti = 0; await Promise.all(rounds[0].t[0].c.map(loadImg)).catch(() => {}); trial();
 }
 
-// ---------- layout: every crop on a screen gets the same scale ----------
-function fit(dims, n, perRow, maxScale){
+// ---------- one screen ----------
+function fit(dims, perRow, maxScale){
   const cw = Math.min(app.clientWidth, 820), gap = innerWidth < 600 ? 8 : 14, bw = 6;
   const w = Math.max(...dims.map(d => d[0])), h = Math.max(...dims.map(d => d[1]));
   const s = Math.min(maxScale, (cw - 6 - gap * (perRow - 1) - bw * perRow) / (perRow * w));
   return { s, gap, w: Math.round(w * s), h: Math.round(h * s) };
 }
-const cellHtml = (code, k, tag, f, label) => `<${tag} class="cell" data-c="${code}" ${tag === 'button' ? 'disabled' : ''} style="width:${f.w + 6}px;height:${f.h + 6}px" aria-label="${label}">
+const cellHtml = (code, k, tag, f, label, cls = '') => `<${tag} class="cell ${cls}" data-c="${code}" ${tag === 'button' ? 'disabled' : ''} style="width:${f.w + 6}px;height:${f.h + 6}px" aria-label="${label}">
   ${k ? `<span class="k">${k}</span>` : ''}<img src="${src(code)}" alt="" draggable="false"></${tag}>`;
-
 async function trial(){
-  const t = trials[ti];
+  const R = rounds[ri], t = R.t[ti];
   const imgs = await Promise.all(t.c.map(loadImg)).catch(() => null);
-  if (!imgs) { ti++; return next(); }                       // an image failed to load: skip this screen
+  if (!imgs){                                              // an image would not load even after a retry: note it and go on
+    state.answers.push({ t: t.id, n: state.answers.length, skip: 1 }); ti++; return next();
+  }
+  preload(R.t[ti + 1] || (rounds[ri + 1] && rounds[ri + 1].t[0]));
   const dims = imgs.map(i => [i.naturalWidth, i.naturalHeight]);
-  preload(trials[ti + 1]);
-  t.g ? gridScreen(t, dims) : tripletScreen(t, dims);
-}
-function tripletScreen(t, dims){
-  const order = shuffle(t.c.map((c, k) => k));               // positions randomised here, logged below
-  const wide = Math.max(...dims.map(d => d[0])) > 100, narrow = innerWidth < 600;
-  let f = fit(dims, 3, 3, 2.5), col = false;
-  if (wide && f.s < 1.6){ f = fit(dims, 3, 1, 2.2); col = true; }
-  screen(`${head(`${ti+1} of ${trials.length}`)}${bar()}
+  const order = shuffle([0, 1, 2]);                        // positions randomised here, logged below
+  const wide = Math.max(...dims.map(d => d[0])) > 100;
+  let f = fit(dims, 3, 2.5), col = false;
+  if (wide && f.s < 1.6){ f = fit(dims, 1, 2.2); col = true; }
+  screen(`${head(`${roundLabel()} · ${ti + 1} of ${R.t.length}`)}${bar()}
     <div class="q"><h2>${QUESTION}</h2><p class="fine">${HINT}</p></div>
     <div class="set ${col ? 'col' : ''}" style="--gap:${f.gap}px">${order.map((k, p) => cellHtml(t.c[k], p + 1, 'button', f, 'Snippet ' + (p + 1))).join('')}</div>`);
-  const cells = [...app.querySelectorAll('button.cell')];
-  const shown = order.map(k => t.c[k]);
+  const cells = [...app.querySelectorAll('button.cell')], shown = order.map(k => t.c[k]);
   setTimeout(() => { shownAt = performance.now(); cells.forEach((b, p) => { b.disabled = false; b.onclick = () => {
     if (busy) return; busy = true; b.classList.add('on');
-    state.answers.push({ t: t.id, n: ti, c: shown, pick: [p], rt: Math.round(performance.now() - shownAt), lay: col ? 'col' : 'row', s: +f.s.toFixed(2) });
+    state.answers.push({ t: t.id, n: state.answers.length, c: shown, pick: [p], rt: Math.round(performance.now() - shownAt), lay: col ? 'col' : 'row', s: +f.s.toFixed(2) });
     setTimeout(() => { busy = false; ti++; next(); }, 140);
   }; }); }, 350);
 }
-function gridScreen(t, dims){
-  const rest = shuffle(t.c.slice(1).map((c, k) => k + 1)), narrow = innerWidth < 600, per = narrow ? 3 : 4;
-  const f = fit(dims, 8, per, dims[0][0] > 100 ? 1.35 : 2);
-  screen(`${head(`${ti+1} of ${trials.length}`)}${bar()}
-    <div class="q"><h2>Pick the two most like the top one</h2><p class="fine">${HINT}</p></div>
-    <div class="probe">${cellHtml(t.c[0], '', 'div', f, 'The snippet to compare with')}</div>
-    <div class="set" style="--gap:${f.gap}px;max-width:${per * (f.w + 6) + (per - 1) * f.gap + 2}px;margin:0 auto">${rest.map((k, p) => cellHtml(t.c[k], '', 'button', f, 'Snippet ' + (p + 1))).join('')}</div>
-    <div class="row"><span class="fine" id="cnt">Choose two</span><button class="btn" id="ok" disabled>Continue</button></div>`);
-  const cells = [...app.querySelectorAll('button.cell')], picks = [], ok = document.getElementById('ok'), shown = [t.c[0], ...rest.map(k => t.c[k])];
-  const upd = () => { ok.disabled = picks.length !== 2; document.getElementById('cnt').textContent = picks.length === 2 ? 'Two chosen' : picks.length === 1 ? 'Choose one more' : 'Choose two'; };
-  setTimeout(() => { shownAt = performance.now(); cells.forEach((b, p) => { b.disabled = false; b.onclick = () => {
-    const at = picks.findIndex(x => x.p === p);
-    if (at >= 0){ picks.splice(at, 1); b.classList.remove('on'); }
-    else if (picks.length < 2){ picks.push({ p, rt: Math.round(performance.now() - shownAt) }); b.classList.add('on'); }
-    upd();
-  }; }); }, 350);
-  ok.onclick = () => { if (busy || picks.length !== 2) return; busy = true;
-    state.answers.push({ t: t.id, n: ti, c: shown, pick: picks.map(x => x.p + 1), rts: picks.map(x => x.rt), rt: Math.round(performance.now() - shownAt), lay: 'grid' + per, s: +f.s.toFixed(2) });
-    busy = false; ti++; next(); };
-}
-function next(){
-  if (ti >= trials.length) return endQuestions();
-  if (ti % BREAK_EVERY === 0) return pause();
-  trial();
-}
-function pause(){
-  saveSession(false);
-  const left = trials.length - ti, n = Math.min(BREAK_EVERY, left);
-  screen(`${head(`${ti} of ${trials.length}`)}${bar()}
-    <h2>${ti} done, ${left} to go</h2>
-    <p>Your answers so far are saved. You can stop here, or do ${n === left ? 'the last' : 'another'} ${n}. The glyph may change along the way; the question stays the same.</p>
-    <div class="choices">
-      <button class="choice" id="more" autofocus>Keep going<small>${n} more</small></button>
-      <button class="choice" id="stop">Stop here<small>two short questions, then done</small></button>
-    </div>`);
-  preload(trials[ti]);
-  document.getElementById('more').onclick = trial;
-  document.getElementById('stop').onclick = () => { state.stoppedEarly = true; endQuestions(); };
-}
+function next(){ if (ti < rounds[ri].t.length) return trial(); roundEnd(); }
 document.addEventListener('keydown', e => {
   if (!['1','2','3'].includes(e.key)) return;
-  const set = app.querySelector('.set'); if (!set || app.querySelector('#ok')) return;
-  const b = set.querySelectorAll('button.cell')[+e.key - 1]; if (b && !b.disabled) b.click();
+  const b = app.querySelectorAll('.set button.cell')[+e.key - 1]; if (b && !b.disabled) b.click();
 });
 
-// ---------- the end: two questions, asked only now ----------
+// ---------- between rounds ----------
+async function moreRounds(){                               // the deck's own extra rounds are used up: borrow those of another deck
+  const d = pickDeck();
+  try { const deck = await getDeck(d); const extra = deck.rounds.filter(r => !r.planned);
+    if (!extra.length || PREVIEW) return false; rounds.push(...extra); state.extraDecks.push(d); return true; }
+  catch(e){ return false; }
+}
+function roundEnd(){
+  state.roundsDone = ri + 1; saveSession(false);
+  const plannedDone = ri + 1 >= nPlanned(), last = ri + 1 >= rounds.length && PREVIEW;
+  const title = !plannedDone ? `Round ${ri + 1} done` : ri + 1 === nPlanned() ? 'That was the main part. Thank you!' : `Bonus round ${ri + 1 - nPlanned()} done`;
+  const text = !plannedDone ? `Your answers are saved. ${nPlanned() - ri - 1} short round${nPlanned() - ri - 1 > 1 ? 's' : ''} to go; the glyph changes, the question stays the same.`
+    : 'Your answers are saved. Every extra round makes the picture sharper, so you are welcome to carry on, for as long as you like.';
+  screen(`${head(`${judged()} screens judged`)}
+    <h2>${title}</h2>
+    <p>${text}</p>
+    <div class="choices">
+      ${last ? '' : `<button class="choice" id="more" autofocus>${plannedDone ? 'One more round' : 'Next round'}<small>12 screens</small></button>`}
+      <button class="choice" id="stop">Stop and see your results<small>two short questions first</small></button>
+    </div>`);
+  const more = document.getElementById('more');
+  if (more) more.onclick = async () => {
+    more.disabled = true;
+    if (ri + 1 >= rounds.length && !(await moreRounds())){ more.outerHTML = '<p class="fine">No more snippets could be loaded.</p>'; return; }
+    ri++; ti = 0; trial();
+  };
+  if (rounds[ri + 1]) preload(rounds[ri + 1].t[0]);
+  document.getElementById('stop').onclick = () => { state.stoppedEarly = !plannedDone; endQuestions(); };
+}
+
+// ---------- the end: two questions, then the results ----------
 function endQuestions(){
   const opt = (name, v, label) => `<label class="opt"><input type="radio" name="${name}" value="${v}" required><span>${label}</span></label>`;
   screen(`${head('Almost done')}
@@ -258,7 +271,7 @@ function endQuestions(){
         ${opt('davis',1,'I have heard of it')}
         ${opt('davis',2,'I am familiar with it and know more or less which method she used to tell the scribal hands apart')}
       </fieldset>
-      <button class="btn" id="fin" disabled>Finish</button>
+      <button class="btn" id="fin" disabled>See my results</button>
     </form>`);
   const f = document.getElementById('f');
   f.oninput = () => { document.getElementById('fin').disabled = !['know','davis'].every(n => f.querySelector(`input[name=${n}]:checked`)); };
@@ -276,17 +289,86 @@ async function finish(){
     document.getElementById('retry').onclick = finish; return;
   }
   state.done = true;
-  screen(`${head('Done')}
+  let crowd = null;
+  try { if (!PREVIEW) crowd = await (await fetch('crowd.json', { cache: 'no-cache' })).json(); } catch(e) {}
+  results(crowd);
+  if (!TEST){ mem.revealed = true; remember(); }
+}
+
+// ---------- results: computed in the browser from this session only (plus the crowd file) ----------
+function results(crowd){
+  const info = {};                                         // trial id -> {g, k, x, p}
+  rounds.forEach(R => R.t.forEach(t => info[t.id] = { g: R.g, k: t.k, x: t.x, p: t.p, c: t.c }));
+  const A = state.answers.filter(a => !a.skip && !info[a.t].p);
+  const thumbs = (codes, mine, labels) => {
+    const f = { w: 64, h: 44 };
+    return `<div class="thumbs">${codes.map((c, j) => `<div class="thumb">${cellHtml(c, '', 'div', f, '', c === mine ? 'mine' : '')}${labels ? `<span>${labels[j]}</span>` : ''}</div>`).join('')}</div>`;
+  };
+  const cards = [];
+  // 1. quickest and hardest glyph (no times shown)
+  const byG = {};
+  A.forEach(a => (byG[info[a.t].g] ||= []).push(a));
+  const gs = Object.keys(byG).filter(g => byG[g].length >= 4).map(g => [g, median(byG[g].map(a => a.rt))]).sort((x, y) => x[1] - y[1]);
+  if (gs.length >= 2){
+    const ex = g => byG[g][0].c[byG[g][0].pick[0]];
+    cards.push(`<div class="res"><h3>Your quickest and your hardest</h3>
+      <p>You made up your mind most easily with <b>${GLYPH[gs[0][0]]}</b>, and <b>${GLYPH[gs[gs.length - 1][0]]}</b> gave you the most to think about.</p>
+      ${thumbs([ex(gs[0][0]), ex(gs[gs.length - 1][0])], null, ['quickest', 'hardest'])}</div>`);
+  }
+  // 2. the screen that kept you busy longest
+  if (A.length){
+    const a = A.reduce((m, x) => x.rt > m.rt ? x : m);
+    cards.push(`<div class="res"><h3>The one that made you think</h3>
+      <p>Of all your screens, this one kept you busy the longest. The one you picked is outlined.</p>${thumbs(a.c, a.c[a.pick[0]])}</div>`);
+  }
+  // 3. favourite position
+  if (A.length >= 6){
+    const cnt = [0, 0, 0]; A.forEach(a => cnt[a.pick[0]]++);
+    const pc = cnt.map(n => Math.round(n / A.length * 100)), lab = ['First (left or top)', 'Second', 'Third'];
+    cards.push(`<div class="res"><h3>Where your eye went</h3>
+      <p>How often you picked the first, second or third snippet on the screen. Perfectly random would be about a third each; the order on screen was shuffled every time.</p>
+      <div class="bars">${pc.map((v, j) => `<span>${lab[j]}</span><div class="b"><div style="width:${v}%"></div></div><span>${v}%</span>`).join('')}</div></div>`);
+  }
+  // 4. agreement with the crowd on the screens everyone sees
+  const C = A.filter(a => info[a.t].k !== undefined);
+  if (C.length){
+    const people = crowd && crowd.build === BUILD ? crowd.people : 0;
+    if (!people){
+      cards.push(`<div class="res"><h3>You and the others</h3>
+        <p>${C.length} of your screens are shown to everyone who takes part. You are among the very first, so there is nobody to compare you with yet. Your choices will be part of the yardstick for the people after you.</p></div>`);
+    } else {
+      let same = 0, rows = '';
+      C.forEach(a => {
+        const cnt = (crowd.screens[info[a.t].k] || {}), tot = Object.values(cnt).reduce((x, y) => x + y, 0);
+        if (!tot) return;
+        const mx = Math.max(...Object.values(cnt)), mine = a.c[a.pick[0]];
+        if ((cnt[mine] || 0) === mx) same++;
+        rows += thumbs(a.c, mine, a.c.map(c => Math.round((cnt[c] || 0) / tot * 100) + '%'));
+      });
+      cards.push(`<div class="res"><h3>You and the others</h3>
+        <p>Some screens are shown to everyone. On <b>${same} of ${C.length}</b> of them you picked the same snippet as most of the ${people} people before you. Below: what everyone picked; your choice is outlined.</p>${rows}</div>`);
+    }
+  }
+  // 5. the secret: same-page screens (shown only here, at the very end)
+  const S = A.filter(a => info[a.t].x !== undefined);
+  if (S.length >= 3){
+    const hit = S.filter(a => a.c[a.pick[0]] === info[a.t].c[info[a.t].x]).length, guess = Math.round(S.length / 3);
+    cards.push(`<div class="res"><h3>Your eye for pages</h3>
+      <p>Now we can tell you a secret. On ${S.length} of your screens, two of the three snippets came from the same page of the manuscript, and one from another page.</p>
+      <div class="big">${hit} of ${S.length}</div>
+      <p>That is how often you picked the one from the other page. By pure guessing you would get about ${guess}.</p></div>`);
+  }
+  screen(`${head('Your results')}
     <h1>Thank you!</h1>
+    <p>You judged ${A.length + state.answers.filter(a => !a.skip && info[a.t].p).length} screens. ${TEST || mem.revealed ? 'Nothing was saved in this run.' : 'Your answers are saved.'}</p>
+    ${cards.join('')}
     <div class="stack">
-      <p>You judged ${state.answers.length} screens. ${TEST ? 'This is a test build, so nothing was saved.' : 'Your answers are saved.'}</p>
-      <p><b>One request:</b> please don't discuss what you think this study is about, in comments or elsewhere, until it has closed. Others should come to it as fresh as you did.</p>
+      <p><b>One request:</b> please don't share these results or discuss what you think this study is about until it has closed. Others should come to it as fresh as you did.</p>
       <p class="fine">What everyone saw, taken together, comes in a later Voynich Talk video.</p>
-    </div>
-    <button class="btn" id="again">Do another round with new snippets</button>`);
-  document.getElementById('again').onclick = welcome;
+    </div>`);
 }
 welcome();
+
 </script>
 </body>
 </html>
